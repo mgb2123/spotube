@@ -165,8 +165,9 @@ jobs:
           distribution: temurin
           java-version: 21
 
+      # Rust 1.100 cambió la estructura de target/ y el plugin Gobley no encuentra la salida de los build scripts
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
