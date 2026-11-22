@@ -200,6 +200,14 @@ jobs:
           release.signing.keyPassword=${KEYSTORE_KEY_PASSWORD}
           EOF
 
+      # Las 4 compilaciones de Rust para Android en paralelo chocan en composeApp/target
+      # (build scripts compartidos), así que se compilan una a una antes del ensamblado.
+      - name: Build Rust libraries (secuencial)
+        run: |
+          for t in Arm64 ArmV7 X64 X86; do
+            ./gradlew :composeApp:cargoBuildAndroid${t}Release
+          done
+
       - name: Assemble Release
         run: ./gradlew :composeApp:assembleStableRelease
 
