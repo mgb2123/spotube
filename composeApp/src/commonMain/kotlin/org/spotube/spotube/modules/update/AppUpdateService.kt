@@ -66,6 +66,9 @@ class AppUpdateService(
             // rather than the repository StateFlow's default value during startup.
             val settings = settingsRepository.getCurrentSettings()
             if (!settings.autoCheckForUpdates) return
+            // Fork personal: las actualizaciones de la app llegan por las releases del fork
+            // (Obtainium), no por las del Spotube oficial. Los plugins sí se siguen actualizando.
+            if (FORK_DISABLE_APP_UPDATE_CHECK) return
 
             val currentVersion = AppReleaseSelector.parseTag(AppBuildInfo.VERSION)
                 ?: return logger.w { "Ignoring update check for invalid app version: ${AppBuildInfo.VERSION}" }
@@ -104,3 +107,4 @@ class AppUpdateService(
     }
 }
 
+private const val FORK_DISABLE_APP_UPDATE_CHECK = true

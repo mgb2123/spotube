@@ -1,0 +1,224 @@
+name: Build APK (fork personal)
+
+# Compila la APK de Android de este fork y la publica como release,
+# para poder instalarla/actualizarla con Obtainium desde el móvil.
+on:
+  workflow_dispatch:
+  push:
+    branches: [master, main]
+    paths-ignore: ['**.md']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apk
+  cancel-in-progress: true
+
+env:
+  COMPOSE_WEBVIEW_REPO: KRTirtho/ComposeNativeWebview
+  COMPOSE_WEBVIEW_COMMIT: b11ac748de1219f9432338c067a2c5dafef3072a
+
+jobs:
+  # ComposeNativeWebview's JNI backends are gitignored and only built for the host OS, so a
+  # publish from macOS alone ships a jar without the Linux / Windows WebView libraries (the
+  # WebView then renders nothing). Build them on their own OS and hand them to prepare-deps.
+  build-webview-natives:
+    name: WebView Natives (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+          - name: windows-x64
+            os: windows-latest
+    steps:
+      - name: Checkout ComposeNativeWebview
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.COMPOSE_WEBVIEW_REPO }}
+          ref: ${{ env.COMPOSE_WEBVIEW_COMMIT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: compose-webview
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Build Linux WebView native library
+        if: runner.os == 'Linux'
+        working-directory: compose-webview
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libcairo2-dev \
+            libsoup-3.0-dev libwebkit2gtk-4.1-dev
+          bash webview-compose/src/jvmMain/native/linux/build.sh
+
+      - name: Build Windows WebView native library
+        if: runner.os == 'Windows'
+        working-directory: compose-webview
+        shell: cmd
+        run: webview-compose\src\jvmMain\native\windows\build.bat
+
+      - name: Verify WebView native library
+        working-directory: compose-webview
+        shell: bash
+        run: |
+          case "${{ matrix.name }}" in
+            linux-*)     files="${{ matrix.name }}/libcompose_webview_linux.so" ;;
+            windows-x64) files="win32-x64/compose_webview_windows.dll win32-x64/WebView2Loader.dll" ;;
+          esac
+          for f in $files; do
+            test -f "webview-compose/src/jvmMain/resources/nucleus/native/$f" || { echo "::error::Missing $f"; exit 1; }
+          done
+
+      - name: Upload WebView native library
+        uses: actions/upload-artifact@v7
+        with:
+          name: webview-natives-${{ matrix.name }}
+          path: compose-webview/webview-compose/src/jvmMain/resources/nucleus/native/
+          retention-days: 1
+
+  prepare-deps:
+    name: Prepare Dependencies
+    needs: [build-webview-natives]
+    runs-on: macos-latest
+    steps:
+      - name: Checkout ComposeNativeWebview
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.COMPOSE_WEBVIEW_REPO }}
+          ref: ${{ env.COMPOSE_WEBVIEW_COMMIT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: compose-webview
+
+      # Downloaded after checkout, so they are newer than the native sources and
+      # the build keeps them instead of trying to rebuild on the wrong OS.
+      - name: Download WebView native libraries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: webview-natives-*
+          merge-multiple: true
+          path: compose-webview/webview-compose/src/jvmMain/resources/nucleus/native
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Publish compose-webview to mavenLocal
+        working-directory: compose-webview
+        run: |
+          chmod +x gradlew
+          ./gradlew publishToMavenLocal
+
+      - name: Verify published JVM jar carries every WebView backend
+        run: |
+          jar=$(ls ~/.m2/repository/dev/nucleusframework/composewebview-jvm/*/composewebview-jvm-*.jar | grep -v -e sources -e javadoc | head -1)
+          contents=$(unzip -l "$jar")
+          for f in linux-x64/libcompose_webview_linux.so linux-aarch64/libcompose_webview_linux.so \
+                   win32-x64/compose_webview_windows.dll win32-x64/WebView2Loader.dll \
+                   darwin-aarch64/libcompose_webview_macos.dylib darwin-x64/libcompose_webview_macos.dylib; do
+            grep -q "nucleus/native/$f" <<< "$contents" || { echo "::error::$jar is missing $f"; exit 1; }
+          done
+
+      - name: Upload maven local
+        uses: actions/upload-artifact@v7
+        with:
+          name: maven-local
+          path: ~/.m2/repository/
+
+
+  build-android:
+    name: Android APK
+    needs: [prepare-deps]
+    timeout-minutes: 120
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download maven local
+        uses: actions/download-artifact@v8
+        with:
+          name: maven-local
+          path: ~/.m2/repository/
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      # Con los secrets KEYSTORE* configurados, todas las builds se firman con la misma clave
+      # y se pueden actualizar encima. Sin ellos se genera una clave temporal (hay que
+      # desinstalar antes de instalar la siguiente build).
+      - name: Prepare signing key
+        env:
+          KEYSTORE: ${{ secrets.KEYSTORE }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
+          KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
+        run: |
+          KS="${{ github.workspace }}/composeApp/upload-keystore.jks"
+          if [ -n "$KEYSTORE" ]; then
+            echo "$KEYSTORE" | base64 --decode > "$KS"
+          else
+            echo "::warning::Sin secret KEYSTORE: se usa una clave temporal"
+            KEYSTORE_PASSWORD=temporal123; KEYSTORE_KEY_ALIAS=temporal; KEYSTORE_KEY_PASSWORD=temporal123
+            keytool -genkeypair -v -keystore "$KS" -alias "$KEYSTORE_KEY_ALIAS" -keyalg RSA -keysize 4096 \
+              -validity 10000 -storepass "$KEYSTORE_PASSWORD" -keypass "$KEYSTORE_KEY_PASSWORD" -dname "CN=Spotube fork"
+          fi
+          cat >> composeApp/local.properties <<EOF
+          release.signing.storeFile=$KS
+          release.signing.storePassword=${KEYSTORE_PASSWORD}
+          release.signing.keyAlias=${KEYSTORE_KEY_ALIAS}
+          release.signing.keyPassword=${KEYSTORE_KEY_PASSWORD}
+          EOF
+
+      - name: Assemble Release
+        run: ./gradlew :composeApp:assembleStableRelease
+
+      - name: Rename APK
+        run: |
+          APK_FILE=$(find composeApp/build/outputs/apk -path "*elease*" -name "*.apk" -type f | head -1)
+          cp "$APK_FILE" Spotube-mgb.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: Spotube-mgb-apk
+          path: Spotube-mgb.apk
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="build-${{ github.run_number }}"
+          gh release create "$TAG" Spotube-mgb.apk --repo "${{ github.repository }}" \
+            --title "Spotube (fork personal) #${{ github.run_number }}" \
+            --notes "Build automática de ${{ github.sha }}" --latest

@@ -386,6 +386,8 @@ android {
     productFlavors {
         create("stable") {
             dimension = "channel"
+            // Fork personal: id propio para convivir con el Spotube oficial y no ser sobrescrita por él
+            applicationIdSuffix = ".mgb"
         }
         create("nightly") {
             dimension = "channel"

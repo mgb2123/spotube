@@ -35,7 +35,7 @@ data class UserSettings(
     // it had no effect, so reading it would force English on existing users.
     @SerialName("appLanguage")
     val language: SupportedLanguages = SupportedLanguages.SYSTEM,
-    val country: CountryCode = CountryCode.BD,
+    val country: CountryCode = CountryCode.ES,
 
     // Appearance
     val theme: Theme = Theme.SYSTEM,
@@ -80,7 +80,7 @@ data class UserSettings(
 
     // Desktop
     val minimizeToTray: Boolean = false,
-    val discordRichPresence: Boolean = true,
+    val discordRichPresence: Boolean = false,
 
     // Updates
     val autoCheckForUpdates: Boolean = true,
@@ -88,7 +88,7 @@ data class UserSettings(
     val ignoredPluginUpdateVersions: Map<String, String> = emptyMap(),
 
     // Support
-    val supportRemindersEnabled: Boolean = true,
+    val supportRemindersEnabled: Boolean = false,
     val lastSupportReminderEpochMs: Long = 0L)
 
 /** The public Group Jam room server. */
